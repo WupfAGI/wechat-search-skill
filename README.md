@@ -10,6 +10,11 @@
 - ⚡ **双引擎自动调度**：Tavily 优先（精准，直链 `mp.weixin.qq.com`），搜狗兜底（无需 API Key）
 - 🔄 **去重合并**：两个引擎结果自动去重
 - 🛡️ **反爬保护**：多页请求随机延时，降低被封风险
+- 📅 **时间过滤**：`--days N` 只返回最近 N 天文章（Tavily API 层 + 搜狗结果层双重过滤）
+- 🔤 **多关键词**：逗号或 OR 语法，自动合并去重
+- 🧹 **去噪过滤**：自动过滤广告软文/标题党（默认开启，`--no-filter` 可关闭）
+- 🤖 **AI 摘要**：`--summary` 调用 Claude API 生成中文简报（需 `ANTHROPIC_API_KEY`）
+- 📨 **飞书推送**：`daily_brief.py` 一键推送到飞书群机器人，支持定时任务
 
 ## 搜索引擎说明
 
@@ -29,15 +34,24 @@ git clone https://github.com/WupfAGI/wechat-search-skill \
 pip install -r ~/.claude/skills/sogou-wechat-search/requirements.txt
 ```
 
-## 配置（可选）
+## 配置
 
-在 `~/.claude/scripts/.env` 中添加 Tavily API Key（无 Key 也能用搜狗兜底）：
+在 `~/.claude/scripts/.env` 中配置 API Key：
 
 ```env
+# 必填（用于 Tavily 精准搜索；无 Key 降级为搜狗兜底）
 TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxx
+
+# 可选（用于 --summary AI摘要 和 daily_brief.py 简报）
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
+
+# 可选（用于 daily_brief.py 推送到飞书）
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+FEISHU_SECRET=your_secret_here
 ```
 
-> 获取免费 Key：https://tavily.com
+> 获取 Tavily 免费 Key：https://tavily.com
+> 获取 Anthropic Key：https://console.anthropic.com/settings/keys
 
 ## 命令行用法
 
@@ -63,7 +77,7 @@ python sogou_search.py --query "昇腾950,昇腾AI" --days 3
 python sogou_search.py --query "DeepSeek OR Qwen" --max-results 15
 ```
 
-### 参数说明
+### sogou_search.py 参数说明
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -73,6 +87,31 @@ python sogou_search.py --query "DeepSeek OR Qwen" --max-results 15
 | `--max-results` / `-n` | `10` | 最大返回条数（≤20） |
 | `--pages` / `-p` | `1` | 搜狗抓取页数（每页约10条） |
 | `--days` / `-d` | `0` | 只返回最近 N 天的文章（0=不限制）。Tavily API 层过滤+搜狗结果层过滤 |
+| `--no-filter` | off | 关闭广告/软文去噪（默认开启） |
+| `--summary` | off | 用 Claude API 生成中文简报（需 `ANTHROPIC_API_KEY`） |
+
+### daily_brief.py 参数说明（飞书定时推送）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--query` / `-q` | 必填 | 搜索关键词（同上，支持多关键词） |
+| `--days` / `-d` | `1` | 时间窗口（默认过去24小时） |
+| `--max-results` / `-n` | `10` | 最大文章数 |
+| `--source` / `-s` | `auto` | 搜索引擎 |
+| `--dry-run` | off | 只预览飞书消息，不实际推送 |
+| `--no-summary` | off | 跳过 AI 摘要生成 |
+
+```bash
+# 预览（不推送）
+python daily_brief.py --query "AI大模型" --days 1 --dry-run
+
+# 推送到飞书
+python daily_brief.py --query "DeepSeek,Qwen" --days 1
+
+# 定时任务（Windows 任务计划程序，每天08:00）
+# 触发器：每天 08:00
+# 操作：python "C:\...\daily_brief.py" --query "AI大模型" --days 1
+```
 
 ## 输出格式（JSON）
 

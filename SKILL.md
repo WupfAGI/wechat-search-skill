@@ -1,15 +1,16 @@
 ---
 name: sogou-wechat-search
-description: 双引擎微信公众号搜索：Tavily API（精准，优先）+ 搜狗微信爬虫（兜底），搜索公众号文章或账号信息并以结构化格式展示。支持时间过滤（--days）和多关键词（逗号/OR）。
-version: 2.1.0
+description: 双引擎微信公众号搜索：Tavily API（精准，优先）+ 搜狗微信爬虫（兜底），支持去噪过滤、AI摘要、飞书定时推送。
+version: 2.2.0
 author: custom
-tags: [wechat, search, scraper, tavily, 微信, 公众号]
+tags: [wechat, search, scraper, tavily, 微信, 公众号, feishu, ai-summary]
 requirements:
   - python3
   - requests
   - beautifulsoup4
   - tavily-python
   - python-dotenv
+  - anthropic
 ---
 
 # 微信公众号双引擎搜索 Skill
@@ -71,6 +72,16 @@ python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "关键词A 
 
 # 组合用法
 python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "昇腾950,昇腾AI" --days 3
+
+# AI 摘要（需 ANTHROPIC_API_KEY）
+python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "DeepSeek" --days 3 --summary
+
+# 去噪过滤默认开启；如需关闭：
+python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "限时福利" --no-filter
+
+# 每日简报推送到飞书（dry-run=预览不推送）
+python ".claude/skills/sogou-wechat-search/daily_brief.py" --query "AI大模型" --days 1 --dry-run
+python ".claude/skills/sogou-wechat-search/daily_brief.py" --query "AI大模型" --days 1
 ```
 
 > **编码说明（Windows）**：在 Windows 上运行前，先执行 `chcp 65001` 或使用以下完整命令：

@@ -17,6 +17,12 @@ Layer 2: 搜狗微信爬虫（兜底，无需 API Key）
   # 多关键词（逗号或 OR）
   python sogou_search.py --query "昇腾950,昇腾950PR"
   python sogou_search.py --query "DeepSeek OR 大模型"
+
+  # AI 摘要
+  python sogou_search.py --query "DeepSeek" --days 3 --summary
+
+  # 关闭去噪过滤（默认开启）
+  python sogou_search.py --query "限时福利" --no-filter
 """
 
 import argparse
@@ -43,7 +49,7 @@ except ImportError:
     sys.exit(1)
 
 # ──────────────────────────────────────────────
-# 加载 .env（读取 TAVILY_API_KEY）
+# 加载 .env（读取 TAVILY_API_KEY / ANTHROPIC_API_KEY）
 # ──────────────────────────────────────────────
 def load_env() -> dict:
     """从 ~/.claude/scripts/.env 加载环境变量"""
@@ -55,13 +61,41 @@ def load_env() -> dict:
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
                 env_vars[k.strip()] = v.strip()
-    # 环境变量优先于文件
+    # 系统环境变量优先于文件
     for k in list(env_vars.keys()):
         env_vars[k] = os.environ.get(k, env_vars[k])
+    # 额外读取系统中存在但 .env 未声明的关键变量
+    for extra in ("ANTHROPIC_API_KEY", "TAVILY_API_KEY", "FEISHU_WEBHOOK_URL", "FEISHU_SECRET"):
+        if extra not in env_vars and os.environ.get(extra):
+            env_vars[extra] = os.environ[extra]
     return env_vars
 
 ENV = load_env()
 TAVILY_API_KEY = ENV.get("TAVILY_API_KEY", "")
+
+
+# ──────────────────────────────────────────────
+# Feature 8：垃圾词去噪
+# ──────────────────────────────────────────────
+SPAM_KEYWORDS = [
+    # 诱导领取类
+    "免费领取", "点击领取", "扫码领取", "立即领取", "戳我领取",
+    "限时免费", "限时福利", "0元领", "白嫖", "薅羊毛",
+    # 商业推广类
+    "商务合作", "广告投放", "商业合作", "寻求合作",
+    # 情绪标题党
+    "不转不是", "震惊了", "万万没想到", "太真实了",
+]
+
+def filter_noise(articles: list) -> list:
+    """
+    过滤标题含垃圾词的广告/软文/标题党文章。
+    对技术/财经类内容误杀率极低（关键词均为营销专用词）。
+    """
+    return [
+        art for art in articles
+        if not any(kw in art.get("title", "") for kw in SPAM_KEYWORDS)
+    ]
 
 
 # ──────────────────────────────────────────────
@@ -119,6 +153,59 @@ def parse_keywords(query: str) -> list:
 
 
 # ──────────────────────────────────────────────
+# Feature 2：AI 摘要（Claude API）
+# ──────────────────────────────────────────────
+def summarize_results(articles: list, query: str, days: int = 0) -> str:
+    """
+    调用 Claude API（claude-3-5-haiku）对搜索结果生成中文简报。
+    - 需要 ANTHROPIC_API_KEY（从 .env 或系统环境变量读取）
+    - 任何异常均静默处理，返回空字符串（不影响主搜索流程）
+    """
+    api_key = ENV.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return ""
+
+    try:
+        import anthropic
+    except ImportError:
+        return ""
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+
+        # 构建文章列表文本（最多取前 10 篇，每篇标题 + 摘要 150 字）
+        articles_text = ""
+        for i, art in enumerate(articles[:10], 1):
+            account = art.get("account", "") or "未知公众号"
+            title = art.get("title", "")
+            abstract = art.get("abstract", "")[:150]
+            date = art.get("date", "")[:10]
+            articles_text += f"{i}. 【{account}】{title}"
+            if date:
+                articles_text += f"（{date}）"
+            articles_text += "\n"
+            if abstract:
+                articles_text += f"   {abstract}\n"
+            articles_text += "\n"
+
+        time_desc = f"过去 {days} 天内" if days > 0 else "最新"
+        prompt = (
+            f"以下是关于「{query}」的{time_desc}微信公众号文章（共 {len(articles)} 篇），"
+            f"请用 3-5 句话生成一份中文简报，概括主要话题和热点趋势，语言简洁专业：\n\n"
+            f"{articles_text}\n简报："
+        )
+
+        message = client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text.strip()
+    except Exception:
+        return ""
+
+
+# ──────────────────────────────────────────────
 # Layer 1：Tavily 搜索
 # ──────────────────────────────────────────────
 def tavily_search(query: str, max_results: int = 10, days: int = 0) -> list:
@@ -160,12 +247,10 @@ def tavily_search(query: str, max_results: int = 10, days: int = 0) -> list:
         # Tavily 有时返回 URL 或无效内容作为 title，尝试从 content 的 Markdown 标题提取
         BAD_TITLES = {"cover_image", "cover image", "image"}
         if not title or title.startswith("http") or title == url or title.lower() in BAD_TITLES:
-            # 优先从 Markdown heading 提取：# 标题
             md_heading = re.search(r"^#+\s+(.+)$", content, re.MULTILINE)
             if md_heading:
                 title = md_heading.group(1).strip()[:100]
             else:
-                # 降级：取 content 中第一个非空、非 URL、非 cover 的行
                 for line in content.split("\n"):
                     line = line.strip(" #\r\n")
                     if line and not line.startswith("http") and line.lower() not in BAD_TITLES:
@@ -254,7 +339,7 @@ def parse_sogou_articles(html: str) -> list:
             abstract = abstract_tag.get_text(strip=True) if abstract_tag else ""
 
             account_tag = (
-                item.select_one("span.all-time-y2")  # 搜狗微信文章列表中账号名所在位置
+                item.select_one("span.all-time-y2")
                 or item.select_one("a.account")
                 or item.select_one(".account")
             )
@@ -348,6 +433,7 @@ def search(
     max_results: int = 10,
     pages: int = 1,
     days: int = 0,
+    noise_filter: bool = True,
 ) -> dict:
     """
     双引擎搜索：
@@ -355,6 +441,7 @@ def search(
       source="tavily" → 仅 Tavily
       source="sogou"  → 仅搜狗
     days > 0 时过滤最近 N 天内的文章（Tavily 在 API 层过滤，搜狗在结果层过滤）
+    noise_filter=True 时过滤广告/软文（默认开启）
     """
     has_tavily = bool(TAVILY_API_KEY)
     articles: list = []
@@ -401,27 +488,38 @@ def search(
         if sogou_arts:
             used_sources.append("sogou")
 
+    # ── Feature 8：去噪 ──
+    if noise_filter:
+        before = len(articles)
+        articles = filter_noise(articles)
+        filtered_count = before - len(articles)
+    else:
+        filtered_count = 0
+
     # 截断到 max_results
     articles = articles[:max_results]
 
     if mode == "article":
-        return {
+        result = {
             "success": True,
             "query": query,
             "mode": "article",
             "days_filter": days if days > 0 else None,
+            "noise_filtered": filtered_count,
             "sources_used": used_sources,
             "tavily_available": has_tavily,
             "total_found": len(articles),
             "results": articles,
         }
+        return result
     else:
-        # account 模式：聚合公众号
         # account 模式需要更多文章，补充搜狗数据
         if mode == "account" and source == "auto":
             extra_arts, _ = sogou_search(query, pages=max(pages, 2))
             if days > 0:
                 extra_arts = filter_by_days(extra_arts, days)
+            if noise_filter:
+                extra_arts = filter_noise(extra_arts)
             existing_titles = {a["title"] for a in articles}
             for art in extra_arts:
                 if art["title"] not in existing_titles:
@@ -436,6 +534,7 @@ def search(
             "query": query,
             "mode": "account",
             "days_filter": days if days > 0 else None,
+            "noise_filtered": filtered_count,
             "sources_used": used_sources,
             "tavily_available": has_tavily,
             "note": "公众号由文章搜索结果聚合（搜狗有账号名；Tavily 部分结果含账号名）",
@@ -471,14 +570,22 @@ def main():
         "--days", "-d", type=int, default=0,
         help="只返回最近 N 天内的文章（默认0=不限制）。Tavily 在 API 层过滤，搜狗在结果层过滤。",
     )
+    parser.add_argument(
+        "--no-filter", action="store_true", default=False,
+        help="关闭广告/软文去噪过滤（默认开启）",
+    )
+    parser.add_argument(
+        "--summary", action="store_true", default=False,
+        help="用 Claude API 生成搜索结果中文简报（需要 ANTHROPIC_API_KEY）",
+    )
     args = parser.parse_args()
 
     # ── 多关键词处理 ──
     keywords = parse_keywords(args.query)
     max_results = min(args.max_results, 20)
+    noise_filter = not args.no_filter
 
     if len(keywords) == 1:
-        # 单关键词，正常执行
         result = search(
             query=keywords[0],
             mode=args.mode,
@@ -486,6 +593,7 @@ def main():
             max_results=max_results,
             pages=args.pages,
             days=args.days,
+            noise_filter=noise_filter,
         )
     else:
         # 多关键词：各自搜索后合并去重
@@ -493,6 +601,7 @@ def main():
         seen_titles: set = set()
         all_sources: set = set()
         any_success = False
+        total_filtered = 0
 
         for kw in keywords:
             sub = search(
@@ -502,9 +611,11 @@ def main():
                 max_results=max_results,
                 pages=args.pages,
                 days=args.days,
+                noise_filter=noise_filter,
             )
             if sub.get("success"):
                 any_success = True
+                total_filtered += sub.get("noise_filtered", 0)
                 for art in sub.get("results", []):
                     t = art.get("title", "")
                     if t and t not in seen_titles:
@@ -512,7 +623,6 @@ def main():
                         seen_titles.add(t)
                 for s in sub.get("sources_used", []):
                     all_sources.add(s)
-            # 多关键词搜索间适当等待，避免搜狗频率限制
             if kw != keywords[-1]:
                 time.sleep(random.uniform(1.0, 2.0))
 
@@ -525,6 +635,7 @@ def main():
                 "keywords": keywords,
                 "mode": "article",
                 "days_filter": args.days if args.days > 0 else None,
+                "noise_filtered": total_filtered,
                 "sources_used": list(all_sources),
                 "tavily_available": bool(TAVILY_API_KEY),
                 "total_found": len(all_articles),
@@ -538,12 +649,23 @@ def main():
                 "keywords": keywords,
                 "mode": "account",
                 "days_filter": args.days if args.days > 0 else None,
+                "noise_filtered": total_filtered,
                 "sources_used": list(all_sources),
                 "tavily_available": bool(TAVILY_API_KEY),
                 "note": "公众号由文章搜索结果聚合",
                 "total_found": len(accounts),
                 "results": accounts,
             }
+
+    # ── Feature 2：AI 摘要 ──
+    if args.summary and result.get("success") and result.get("results"):
+        summary = summarize_results(
+            articles=result["results"],
+            query=args.query,
+            days=args.days,
+        )
+        if summary:
+            result["summary"] = summary
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
