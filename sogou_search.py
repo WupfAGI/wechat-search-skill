@@ -153,54 +153,60 @@ def parse_keywords(query: str) -> list:
 
 
 # ──────────────────────────────────────────────
-# Feature 2：AI 摘要（Claude API）
+# Feature 2：AI 摘要（Kimi API）
 # ──────────────────────────────────────────────
 def summarize_results(articles: list, query: str, days: int = 0) -> str:
     """
-    调用 Claude API（claude-3-5-haiku）对搜索结果生成中文简报。
-    - 需要 ANTHROPIC_API_KEY（从 .env 或系统环境变量读取）
+    调用 Kimi API（moonshot-v1-8k）对搜索结果生成中文简报。
+    - 需要 KIMI_API_KEY（从 .env 或系统环境变量读取）
+    - 使用 requests 直接调用，无额外依赖
     - 任何异常均静默处理，返回空字符串（不影响主搜索流程）
     """
-    api_key = ENV.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = ENV.get("KIMI_API_KEY", "") or os.environ.get("KIMI_API_KEY", "")
     if not api_key:
         return ""
 
-    try:
-        import anthropic
-    except ImportError:
-        return ""
+    # 构建文章列表文本（最多取前 10 篇，每篇标题 + 摘要 150 字）
+    articles_text = ""
+    for i, art in enumerate(articles[:10], 1):
+        account = art.get("account", "") or "未知公众号"
+        title = art.get("title", "")
+        abstract = art.get("abstract", "")[:150]
+        date = art.get("date", "")[:10]
+        articles_text += f"{i}. 【{account}】{title}"
+        if date:
+            articles_text += f"（{date}）"
+        articles_text += "\n"
+        if abstract:
+            articles_text += f"   {abstract}\n"
+        articles_text += "\n"
+
+    time_desc = f"过去 {days} 天内" if days > 0 else "最新"
+    prompt = (
+        f"以下是关于「{query}」的{time_desc}微信公众号文章（共 {len(articles)} 篇），"
+        f"请用 3-5 句话生成一份中文简报，概括主要话题和热点趋势，语言简洁专业：\n\n"
+        f"{articles_text}\n简报："
+    )
+
+    base_url = ENV.get("KIMI_BASE_URL", "https://api.chatanywhere.com.cn")
+    model = ENV.get("KIMI_MODEL", "moonshot-v1-8k")
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-
-        # 构建文章列表文本（最多取前 10 篇，每篇标题 + 摘要 150 字）
-        articles_text = ""
-        for i, art in enumerate(articles[:10], 1):
-            account = art.get("account", "") or "未知公众号"
-            title = art.get("title", "")
-            abstract = art.get("abstract", "")[:150]
-            date = art.get("date", "")[:10]
-            articles_text += f"{i}. 【{account}】{title}"
-            if date:
-                articles_text += f"（{date}）"
-            articles_text += "\n"
-            if abstract:
-                articles_text += f"   {abstract}\n"
-            articles_text += "\n"
-
-        time_desc = f"过去 {days} 天内" if days > 0 else "最新"
-        prompt = (
-            f"以下是关于「{query}」的{time_desc}微信公众号文章（共 {len(articles)} 篇），"
-            f"请用 3-5 句话生成一份中文简报，概括主要话题和热点趋势，语言简洁专业：\n\n"
-            f"{articles_text}\n简报："
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 600,
+                "temperature": 0.3,
+            },
+            timeout=30,
         )
-
-        message = client.messages.create(
-            model="claude-3-5-haiku-20241022",
-            max_tokens=600,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return message.content[0].text.strip()
+        return resp.json()["choices"][0]["message"]["content"].strip()
     except Exception:
         return ""
 
