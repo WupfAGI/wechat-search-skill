@@ -1,7 +1,7 @@
 ---
 name: sogou-wechat-search
-description: 双引擎微信公众号搜索：Tavily API（精准，优先）+ 搜狗微信爬虫（兜底），搜索公众号文章或账号信息并以结构化格式展示。
-version: 2.0.0
+description: 双引擎微信公众号搜索：Tavily API（精准，优先）+ 搜狗微信爬虫（兜底），搜索公众号文章或账号信息并以结构化格式展示。支持时间过滤（--days）和多关键词（逗号/OR）。
+version: 2.1.0
 author: custom
 tags: [wechat, search, scraper, tavily, 微信, 公众号]
 requirements:
@@ -60,6 +60,17 @@ python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "关键词" 
 
 # 搜索公众号
 python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "公众号名称" --type account
+
+# 时间过滤：只看最近 N 天的文章
+python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "关键词" --days 1
+python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "关键词" --days 7
+
+# 多关键词（逗号分隔 或 OR 语法）
+python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "关键词A,关键词B"
+python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "关键词A OR 关键词B"
+
+# 组合用法
+python ".claude/skills/sogou-wechat-search/sogou_search.py" --query "昇腾950,昇腾AI" --days 3
 ```
 
 > **编码说明（Windows）**：在 Windows 上运行前，先执行 `chcp 65001` 或使用以下完整命令：

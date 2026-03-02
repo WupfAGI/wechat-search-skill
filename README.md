@@ -53,17 +53,26 @@ python sogou_search.py --query "DeepSeek" --source tavily --max-results 20
 
 # 搜索公众号（聚合模式）
 python sogou_search.py --query "招商证券" --type account
+
+# 时间过滤：只返回最近 1 天 / 7 天的文章
+python sogou_search.py --query "昇腾950" --days 1
+python sogou_search.py --query "大模型" --days 7 --source tavily
+
+# 多关键词（逗号分隔 或 OR 语法，自动合并去重）
+python sogou_search.py --query "昇腾950,昇腾AI" --days 3
+python sogou_search.py --query "DeepSeek OR Qwen" --max-results 15
 ```
 
 ### 参数说明
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--query` / `-q` | 必填 | 搜索关键词 |
+| `--query` / `-q` | 必填 | 搜索关键词。支持多关键词：`"词A,词B"` 或 `"词A OR 词B"` |
 | `--type` / `-t` | `article` | `article`=文章 / `account`=公众号 |
 | `--source` / `-s` | `auto` | `auto` / `tavily` / `sogou` |
 | `--max-results` / `-n` | `10` | 最大返回条数（≤20） |
 | `--pages` / `-p` | `1` | 搜狗抓取页数（每页约10条） |
+| `--days` / `-d` | `0` | 只返回最近 N 天的文章（0=不限制）。Tavily API 层过滤+搜狗结果层过滤 |
 
 ## 输出格式（JSON）
 

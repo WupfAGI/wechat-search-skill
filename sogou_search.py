@@ -9,6 +9,14 @@ Layer 2: 搜狗微信爬虫（兜底，无需 API Key）
   python sogou_search.py --query "招商证券" --type account
   python sogou_search.py --query "AI大模型" --source sogou --pages 2
   python sogou_search.py --query "量化" --source tavily --max-results 20
+
+  # 时间过滤（过去 N 天）
+  python sogou_search.py --query "昇腾950" --days 1
+  python sogou_search.py --query "DeepSeek" --days 7 --source tavily
+
+  # 多关键词（逗号或 OR）
+  python sogou_search.py --query "昇腾950,昇腾950PR"
+  python sogou_search.py --query "DeepSeek OR 大模型"
 """
 
 import argparse
@@ -55,13 +63,69 @@ def load_env() -> dict:
 ENV = load_env()
 TAVILY_API_KEY = ENV.get("TAVILY_API_KEY", "")
 
+
+# ──────────────────────────────────────────────
+# 工具函数：日期解析 & 过滤
+# ──────────────────────────────────────────────
+def parse_date(date_str: str):
+    """尝试解析日期字符串，支持 'YYYY-MM-DD HH:MM' 和 'YYYY-MM-DD' 两种格式。"""
+    if not date_str:
+        return None
+    try:
+        return datetime.datetime.strptime(date_str[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        pass
+    try:
+        return datetime.datetime.strptime(date_str[:10], "%Y-%m-%d")
+    except ValueError:
+        pass
+    return None
+
+
+def filter_by_days(articles: list, days: int) -> list:
+    """
+    过滤超出时间窗口的文章。
+    - days <= 0：不过滤，原样返回
+    - 日期缺失或解析失败的文章：保留（不因日期缺失而丢弃）
+    """
+    if days <= 0:
+        return articles
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+    result = []
+    for art in articles:
+        dt = parse_date(art.get("date", ""))
+        if dt is None or dt >= cutoff:
+            result.append(art)
+    return result
+
+
+# ──────────────────────────────────────────────
+# 工具函数：多关键词解析
+# ──────────────────────────────────────────────
+def parse_keywords(query: str) -> list:
+    """
+    解析多关键词，支持两种分隔语法：
+      - 逗号分隔："昇腾950,昇腾950PR"
+      - OR 分隔："DeepSeek OR 大模型"
+    单个关键词直接返回含一个元素的列表。
+    """
+    if " OR " in query:
+        keywords = [k.strip() for k in query.split(" OR ") if k.strip()]
+    elif "," in query:
+        keywords = [k.strip() for k in query.split(",") if k.strip()]
+    else:
+        keywords = [query.strip()]
+    return keywords
+
+
 # ──────────────────────────────────────────────
 # Layer 1：Tavily 搜索
 # ──────────────────────────────────────────────
-def tavily_search(query: str, max_results: int = 10) -> list[dict]:
+def tavily_search(query: str, max_results: int = 10, days: int = 0) -> list:
     """
     通过 Tavily API 搜索微信公众号文章。
     限定域名 mp.weixin.qq.com，结果最新、质量高。
+    days > 0 时在 API 层面过滤（最近 N 天），days=0 不限制。
     返回标准化 article 列表。
     """
     if not TAVILY_API_KEY:
@@ -74,13 +138,16 @@ def tavily_search(query: str, max_results: int = 10) -> list[dict]:
 
     try:
         client = TavilyClient(api_key=TAVILY_API_KEY)
-        resp = client.search(
+        search_kwargs = dict(
             query=query,
             include_domains=["mp.weixin.qq.com"],
             max_results=min(max_results, 20),
-            search_depth="advanced",   # 更深度的搜索
+            search_depth="advanced",
         )
-    except Exception as e:
+        if days > 0:
+            search_kwargs["days"] = days  # Tavily 原生支持 days 参数
+        resp = client.search(**search_kwargs)
+    except Exception:
         return []
 
     results = []
@@ -156,7 +223,7 @@ def get_session() -> requests.Session:
     return s
 
 
-def fetch_sogou_page(session: requests.Session, query: str, page: int = 1) -> str | None:
+def fetch_sogou_page(session: requests.Session, query: str, page: int = 1):
     """拉取搜狗微信文章搜索结果页"""
     params = {"type": 2, "query": query, "page": page, "ie": "utf8"}
     try:
@@ -170,7 +237,7 @@ def fetch_sogou_page(session: requests.Session, query: str, page: int = 1) -> st
         return None
 
 
-def parse_sogou_articles(html: str) -> list[dict]:
+def parse_sogou_articles(html: str) -> list:
     """解析搜狗微信文章列表 HTML"""
     soup = BeautifulSoup(html, "html.parser")
     results = []
@@ -223,7 +290,7 @@ def parse_sogou_articles(html: str) -> list[dict]:
     return results
 
 
-def sogou_search(query: str, pages: int = 1) -> tuple[list[dict], bool]:
+def sogou_search(query: str, pages: int = 1) -> tuple:
     """
     搜狗微信搜索，返回 (文章列表, 是否触发验证码)。
     """
@@ -244,9 +311,9 @@ def sogou_search(query: str, pages: int = 1) -> tuple[list[dict], bool]:
 # ──────────────────────────────────────────────
 # 公众号聚合
 # ──────────────────────────────────────────────
-def aggregate_accounts(articles: list[dict]) -> list[dict]:
+def aggregate_accounts(articles: list) -> list:
     """从文章列表中按公众号名聚合（搜狗有账号名，Tavily 部分有）"""
-    accounts: dict[str, dict] = {}
+    accounts: dict = {}
     for art in articles:
         name = art.get("account", "").strip()
         if not name:
@@ -280,21 +347,23 @@ def search(
     source: str = "auto",
     max_results: int = 10,
     pages: int = 1,
+    days: int = 0,
 ) -> dict:
     """
     双引擎搜索：
       source="auto"   → 优先 Tavily，不足时补充搜狗
       source="tavily" → 仅 Tavily
       source="sogou"  → 仅搜狗
+    days > 0 时过滤最近 N 天内的文章（Tavily 在 API 层过滤，搜狗在结果层过滤）
     """
     has_tavily = bool(TAVILY_API_KEY)
-    articles: list[dict] = []
+    articles: list = []
     captcha_hit = False
-    used_sources: list[str] = []
+    used_sources: list = []
 
     # ── Tavily ──
     if source in ("auto", "tavily") and has_tavily:
-        tv_results = tavily_search(query, max_results=max_results)
+        tv_results = tavily_search(query, max_results=max_results, days=days)
         if tv_results:
             articles.extend(tv_results)
             used_sources.append("tavily")
@@ -318,6 +387,10 @@ def search(
                 "results": [],
             }
 
+        # 搜狗结果按 days 过滤
+        if days > 0:
+            sogou_arts = filter_by_days(sogou_arts, days)
+
         # 去重：以 title 为 key，Tavily 结果保留（已在前）
         existing_titles = {a["title"] for a in articles}
         for art in sogou_arts:
@@ -336,6 +409,7 @@ def search(
             "success": True,
             "query": query,
             "mode": "article",
+            "days_filter": days if days > 0 else None,
             "sources_used": used_sources,
             "tavily_available": has_tavily,
             "total_found": len(articles),
@@ -346,6 +420,8 @@ def search(
         # account 模式需要更多文章，补充搜狗数据
         if mode == "account" and source == "auto":
             extra_arts, _ = sogou_search(query, pages=max(pages, 2))
+            if days > 0:
+                extra_arts = filter_by_days(extra_arts, days)
             existing_titles = {a["title"] for a in articles}
             for art in extra_arts:
                 if art["title"] not in existing_titles:
@@ -359,6 +435,7 @@ def search(
             "success": True,
             "query": query,
             "mode": "account",
+            "days_filter": days if days > 0 else None,
             "sources_used": used_sources,
             "tavily_available": has_tavily,
             "note": "公众号由文章搜索结果聚合（搜狗有账号名；Tavily 部分结果含账号名）",
@@ -372,7 +449,10 @@ def search(
 # ──────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="微信公众号双引擎搜索（Tavily + 搜狗）")
-    parser.add_argument("--query", "-q", required=True, help="搜索关键词")
+    parser.add_argument(
+        "--query", "-q", required=True,
+        help="搜索关键词。支持多关键词：逗号分隔 '关键词1,关键词2' 或 OR 语法 '关键词1 OR 关键词2'",
+    )
     parser.add_argument(
         "--type", "-t", dest="mode",
         choices=["article", "account"], default="article",
@@ -387,15 +467,84 @@ def main():
                         help="最大返回条数（默认10，最多20）")
     parser.add_argument("--pages", "-p", type=int, default=1,
                         help="搜狗抓取页数（默认1页≈10条，仅 source=sogou 时生效）")
+    parser.add_argument(
+        "--days", "-d", type=int, default=0,
+        help="只返回最近 N 天内的文章（默认0=不限制）。Tavily 在 API 层过滤，搜狗在结果层过滤。",
+    )
     args = parser.parse_args()
 
-    result = search(
-        query=args.query,
-        mode=args.mode,
-        source=args.source,
-        max_results=min(args.max_results, 20),
-        pages=args.pages,
-    )
+    # ── 多关键词处理 ──
+    keywords = parse_keywords(args.query)
+    max_results = min(args.max_results, 20)
+
+    if len(keywords) == 1:
+        # 单关键词，正常执行
+        result = search(
+            query=keywords[0],
+            mode=args.mode,
+            source=args.source,
+            max_results=max_results,
+            pages=args.pages,
+            days=args.days,
+        )
+    else:
+        # 多关键词：各自搜索后合并去重
+        all_articles = []
+        seen_titles: set = set()
+        all_sources: set = set()
+        any_success = False
+
+        for kw in keywords:
+            sub = search(
+                query=kw,
+                mode=args.mode,
+                source=args.source,
+                max_results=max_results,
+                pages=args.pages,
+                days=args.days,
+            )
+            if sub.get("success"):
+                any_success = True
+                for art in sub.get("results", []):
+                    t = art.get("title", "")
+                    if t and t not in seen_titles:
+                        all_articles.append(art)
+                        seen_titles.add(t)
+                for s in sub.get("sources_used", []):
+                    all_sources.add(s)
+            # 多关键词搜索间适当等待，避免搜狗频率限制
+            if kw != keywords[-1]:
+                time.sleep(random.uniform(1.0, 2.0))
+
+        all_articles = all_articles[:max_results]
+
+        if args.mode == "article":
+            result = {
+                "success": any_success,
+                "query": args.query,
+                "keywords": keywords,
+                "mode": "article",
+                "days_filter": args.days if args.days > 0 else None,
+                "sources_used": list(all_sources),
+                "tavily_available": bool(TAVILY_API_KEY),
+                "total_found": len(all_articles),
+                "results": all_articles,
+            }
+        else:
+            accounts = aggregate_accounts(all_articles)
+            result = {
+                "success": any_success,
+                "query": args.query,
+                "keywords": keywords,
+                "mode": "account",
+                "days_filter": args.days if args.days > 0 else None,
+                "sources_used": list(all_sources),
+                "tavily_available": bool(TAVILY_API_KEY),
+                "note": "公众号由文章搜索结果聚合",
+                "total_found": len(accounts),
+                "results": accounts,
+            }
+
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
