@@ -153,13 +153,14 @@ def parse_keywords(query: str) -> list:
 
 
 # ──────────────────────────────────────────────
-# Feature 2：AI 摘要（Kimi API）
+# Feature 2：AI 摘要（Kimi Coding API，Anthropic 格式）
 # ──────────────────────────────────────────────
 def summarize_results(articles: list, query: str, days: int = 0) -> str:
     """
-    调用 Kimi API（moonshot-v1-8k）对搜索结果生成中文简报。
+    调用 Kimi Coding API 对搜索结果生成中文简报。
+    - 接口格式：Anthropic Messages API（x-api-key + /v1/messages）
+    - Base URL：KIMI_BASE_URL（默认 https://api.kimi.com/coding）
     - 需要 KIMI_API_KEY（从 .env 或系统环境变量读取）
-    - 使用 requests 直接调用，无额外依赖
     - 任何异常均静默处理，返回空字符串（不影响主搜索流程）
     """
     api_key = ENV.get("KIMI_API_KEY", "") or os.environ.get("KIMI_API_KEY", "")
@@ -188,25 +189,27 @@ def summarize_results(articles: list, query: str, days: int = 0) -> str:
         f"{articles_text}\n简报："
     )
 
-    base_url = ENV.get("KIMI_BASE_URL", "https://api.chatanywhere.com.cn")
-    model = ENV.get("KIMI_MODEL", "moonshot-v1-8k")
+    base_url = ENV.get("KIMI_BASE_URL", "https://api.kimi.com/coding")
+    model = ENV.get("KIMI_MODEL", "claude-3-5-haiku-20241022")
 
     try:
         resp = requests.post(
-            f"{base_url.rstrip('/')}/v1/chat/completions",
+            f"{base_url.rstrip('/')}/v1/messages",
             headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
             },
             json={
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 600,
-                "temperature": 0.3,
+                "messages": [{"role": "user", "content": prompt}],
             },
             timeout=30,
         )
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        data = resp.json()
+        # Anthropic 格式响应：{"content": [{"type": "text", "text": "..."}]}
+        return data["content"][0]["text"].strip()
     except Exception:
         return ""
 
